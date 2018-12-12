@@ -348,11 +348,12 @@ def wpt_chunk(release_build_task, total_chunks, this_chunk):
                 tests/wpt/mozilla/tests/mozilla/secure.https.html
         """)
     task.with_script("""
-        git log --merges --oneline -1
-        git log --merges --oneline -10
-        git log -10
-        git log --merges -10
-        git log --oneline -10
+        git log --merges --oneline -1|cat
+        git log --merges --oneline -9|cat
+        git log -9|cat
+        git log --merges -9|cat
+        git log --oneline -9|cat
+        git --version
         ./mach test-wpt \
             --release \
             --processes 24 \
