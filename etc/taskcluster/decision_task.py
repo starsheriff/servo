@@ -13,8 +13,6 @@ def main(task_for):
         # FIXME https://github.com/servo/servo/issues/22325 implement these:
         macos_wpt = magicleap_dev = linux_arm32_dev = linux_arm64_dev = \
             android_arm32_dev_from_macos = lambda: None
-        # FIXME still buggy:
-        linux_wpt = lambda: None  # Shadows the existing top-level function
 
         all_tests = [
             linux_tidy_unit_docs,
@@ -34,6 +32,7 @@ def main(task_for):
             "try": all_tests,
             "try-taskcluster": [
                 # Add functions here as needed, in your push to that branch
+                linux_wpt,
             ],
             "master": [
                 # Also show these tasks in https://treeherder.mozilla.org/#/jobs?repo=servo-auto
@@ -293,19 +292,21 @@ def windows_release():
 
 
 def linux_wpt():
-    release_build_task = linux_release_build()
+    release_build_task = "P9WU_2MRTGKbVsTxf7RDCw" # linux_release_build(with_debug_assertions=True)
     total_chunks = 2
     for i in range(total_chunks):
         this_chunk = i + 1
         wpt_chunk(release_build_task, total_chunks, this_chunk)
 
 
-def linux_release_build():
+def linux_release_build(with_debug_assertions=False):
+    a = with_debug_assertions
     return (
-        linux_build_task("Release build")
-        .with_treeherder("Linux x64", "Release")
+        linux_build_task("Release build" + ", with debug assertions" if a else "")
+        .with_treeherder("Linux x64", "Release" + "+A" if a else "")
+        .with_env(BUILD_FLAGS="--with-debug-assertions" if a else "")
         .with_script("""
-            ./mach build --release --with-debug-assertions -p servo
+            ./mach build --release $BUILD_FLAGS -p servo
             ./etc/ci/lockfile_changed.sh
             tar -czf /target.tar.gz \
                 target/release/servo \
@@ -313,7 +314,9 @@ def linux_release_build():
                 target/release/build/osmesa-src-*/out/lib/gallium
         """)
         .with_artifacts("/target.tar.gz")
-        .find_or_create("build.linux_x64_release." + CONFIG.git_sha)
+        .find_or_create(
+            "build.linux_x64_release%s.%s" % ("+assertions" if a else "", CONFIG.git_sha)
+        )
     )
 
 
@@ -327,44 +330,51 @@ def wpt_chunk(release_build_task, total_chunks, this_chunk):
         .with_script("tar -xzf target.tar.gz")
         .with_index_and_artifacts_expire_in(log_artifacts_expire_in)
         .with_max_run_time_minutes(60)
-        .with_env(TOTAL_CHUNKS=total_chunks, THIS_CHUNK=this_chunk)
-        .with_script("""
-            ./mach test-wpt \
-                --release \
-                --processes 24 \
-                --total-chunks "$TOTAL_CHUNKS" \
-                --this-chunk "$THIS_CHUNK" \
-                --log-raw test-wpt.log \
-                --log-errorsummary wpt-errorsummary.log \
-                --always-succeed
-            ./mach filter-intermittents\
-                wpt-errorsummary.log \
-                --log-intermittents intermittents.log \
-                --log-filteredsummary filtered-wpt-errorsummary.log \
-                --tracker-api default
-        """)
-        # FIXME: --reporter-api default
-        # IndexError: list index out of range
-        # File "/repo/python/servo/testing_commands.py", line 533, in filter_intermittents
-        #   pull_request = int(last_merge.split(' ')[4][1:])
+        .with_env(TOTAL_CHUNKS=total_chunks * 10, THIS_CHUNK=this_chunk)
     )
-    if this_chunk == 1:
+    if this_chunk == -1:
         task.name += " + extra"
         task.extra["treeherder"]["symbol"] += "+"
         task.with_script("""
-            ./mach test-wpt-failure
-            ./mach test-wpt --release --binary-arg=--multiprocess --processes 24 \
+            time ./mach test-wpt-failure
+            time ./mach test-wpt --release --binary-arg=--multiprocess --processes 24 \
                 --log-raw test-wpt-mp.log \
                 --log-errorsummary wpt-mp-errorsummary.log \
                 eventsource
+            time ./mach test-wpt --release --product=servodriver --headless  \
+                tests/wpt/mozilla/tests/mozilla/DOMParser.html \
+                tests/wpt/mozilla/tests/css/per_glyph_font_fallback_a.html \
+                tests/wpt/mozilla/tests/css/img_simple.html \
+                tests/wpt/mozilla/tests/mozilla/secure.https.html
         """)
+    task.with_script("""
+        git log --merges --oneline -1
+        git log --merges --oneline -10
+        git log -10
+        git log --merges -10
+        git log --oneline -10
+        ./mach test-wpt \
+            --release \
+            --processes 24 \
+            --total-chunks "$TOTAL_CHUNKS" \
+            --this-chunk "$THIS_CHUNK" \
+            --log-raw test-wpt.log \
+            --log-errorsummary wpt-errorsummary.log \
+            --always-succeed
+        ./mach filter-intermittents\
+            wpt-errorsummary.log \
+            --log-intermittents intermittents.log \
+            --log-filteredsummary filtered-wpt-errorsummary.log \
+            --tracker-api default \
+            --reporter-api default
+    """)
     task.with_artifacts(*[
         "/repo/" + word
         for script in task.scripts
         for word in script.split()
         if word.endswith(".log")
     ])
-    task.create()
+    return task.create()
 
 
 def daily_tasks_setup():
